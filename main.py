@@ -33,8 +33,8 @@ class Track:
         return Track(author, title, duration, dl_link)
         
 
-def get_songs(query: str) -> List[Track]:
-    print("getting songs..")
+def get_tracks(query: str) -> List[Track]:
+    print("getting tracks..")
     url = HOTPLAYER_URL.format(query=query, page=1)
     req = requests.get(url)
     results = BeautifulSoup(req.text, 'lxml').find("div", class_="result")
