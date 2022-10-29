@@ -1,39 +1,70 @@
-from pyrogram import Client, filters
-from pyrogram.types import (InlineQueryResultArticle, InputTextMessageContent,
-                            InlineKeyboardMarkup, InlineKeyboardButton)
-
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import List
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 import re
 import io
-from urllib.parse import unquote
+import urllib
 
-from config import API_ID, API_HASH, BOT_TOKEN
+import telebot
+from telebot import types
 
-app = Client("hotplayerbot", API_ID, API_HASH, bot_token=BOT_TOKEN)
+from config import BOT_TOKEN
 
-HOTPLAYER_URL = "https://hub.hitplayer.ru/?s={}" # yes, hitplayer
+HOTPLAYER_URL = "https://hub.hitplayer.ru/?s={query}&p={page}" # yes, hitplayer
+API_TOKEN = BOT_TOKEN
+ID_REGEX = re.compile(r"id-[0-9a-f]{21}")
 
-@app.on_message(filters.text & filters.private)
-async def download(client: Client, message):
-    print("processing..")
-    await app.send_message(message.from_user.id, "procecececececececececessssssinG")
-    url = HOTPLAYER_URL.format(message.text)
+@dataclass
+class Track:
+    author: str
+    title: str
+    duration: int
+    dl_link: str
+    
+    @staticmethod
+    def from_tag(tag: Tag) -> Track:
+        author = tag.select_one(".title > a").get_text()
+        title = tag.select_one(".title > .tt").get_text()
+        raw_duration = tag.select_one(".dur").get_text().split(":")
+        duration = int(raw_duration[0])*60+int(raw_duration[1])
+        dl_link = tag.select_one(".com > .dwnld").get("href")
+        return Track(author, title, duration, dl_link)
+        
+
+def get_songs(query: str) -> List[Track]:
+    print("getting songs..")
+    url = HOTPLAYER_URL.format(query=query, page=1)
     req = requests.get(url)
-    download_links = BeautifulSoup(req.text, 'lxml').find_all('a', class_="dwnld fa fa-download")
-    #download_link = re.search(r'href="(https://d\d.hotplayer.ru/downloadm/.+)"', req.text).group(1)
-    download_link = download_links[0].get('href')
-    song_req = requests.get(download_link + "?play")
-    new_filename = unquote(song_req.headers['Content-Disposition'].partition('filename=')[2]).replace(' (www.hotplayer.ru)', '') 
-    print(new_filename)
-    audio = io.BytesIO(song_req.content)
-    await app.send_audio(
-            message.from_user.id,
-            audio,
-            file_name=new_filename
-    )
+    results = BeautifulSoup(req.text, 'lxml').find("div", class_="result")
+    if results.find("p") is not None: # contains the "not found" message
+        return []
+    to_process = list(results.find_all("div", id=ID_REGEX))
+    if results.find("div", id="pagination") is not None: # if there are more pages
+        for i in range(2,6): # up to 5
+            req = requests.get(HOTPLAYER_URL.format(query=query, page=i))
+            results = BeautifulSoup(req.text, 'lxml').find("div", class_="result")
+            to_process += list(results.find_all("div", id=ID_REGEX))
+    
+    tracks = [Track.from_tag(s) for s in to_process]
+    return tracks
     
 
-print("Running...")
-app.run()  # Automatically start() and idle()
 
+
+def download(client, message):
+    print("processing..")
+    app = None
+    # await app.send_message(message.from_user.id, "procecececececececececessssssinG")
+    # download_link = download_links[0].get('href')
+    # song_req = requests.get(download_link + "?play")
+    # # removes hotplayer watermark from the filename
+    # new_filename = urllib.parse.unquote(song_req.headers['Content-Disposition'].partition('filename=')[2]).replace(' (www.hotplayer.ru)', '') 
+    # print(new_filename)
+    # audio = io.BytesIO(song_req.content)
+    # await app.send_audio(
+    #         message.from_user.id,
+    #         audio,
+    #         file_name=new_filename
+    # )
