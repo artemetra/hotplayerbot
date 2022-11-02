@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 import requests
 from bs4 import BeautifulSoup, Tag
 import re
@@ -12,9 +12,10 @@ from telebot import types
 
 from config import BOT_TOKEN
 
-HOTPLAYER_URL = "https://hub.hitplayer.ru/?s={query}&p={page}" # yes, hitplayer
+HOTPLAYER_URL = "https://hub.hitplayer.ru/?s={query}&p={page}"  # yes, hitplayer
 API_TOKEN = BOT_TOKEN
 ID_REGEX = re.compile(r"id-[0-9a-f]{21}")
+
 
 @dataclass
 class Track:
@@ -22,35 +23,48 @@ class Track:
     title: str
     duration: int
     dl_link: str
-    
+
     @staticmethod
     def from_tag(tag: Tag) -> Track:
+        """Constructs a Track from a bs4 tag"""
         author = tag.select_one(".title > a").get_text()
         title = tag.select_one(".title > .tt").get_text()
         raw_duration = tag.select_one(".dur").get_text().split(":")
-        duration = int(raw_duration[0])*60+int(raw_duration[1])
+        duration = int(raw_duration[0]) * 60 + int(raw_duration[1])
         dl_link = tag.select_one(".com > .dwnld").get("href")
         return Track(author, title, duration, dl_link)
-        
+
+    def download(self) -> Tuple[str, io.BytesIO]:
+        """Returns the tuple with the new filename and the audio content"""
+        song_req = requests.get(self.dl_link + "?play")
+        audio = io.BytesIO(song_req.content)
+        # removes hotplayer watermark from the filename
+        header_filename = song_req.headers["Content-Disposition"].partition(
+            "filename="
+        )[-1]
+        new_filename = urllib.parse.unquote(header_filename).replace(
+            " (www.hotplayer.ru)", ""
+        )
+
+        return new_filename, audio
+
 
 def get_tracks(query: str) -> List[Track]:
     print("getting tracks..")
     url = HOTPLAYER_URL.format(query=query, page=1)
     req = requests.get(url)
-    results = BeautifulSoup(req.text, 'lxml').find("div", class_="result")
-    if results.find("p") is not None: # contains the "not found" message
+    results = BeautifulSoup(req.text, "lxml").find("div", class_="result")
+    if results.find("p") is not None:  # contains the "not found" message
         return []
     to_process = list(results.find_all("div", id=ID_REGEX))
-    if results.find("div", id="pagination") is not None: # if there are more pages
-        for i in range(2,6): # up to 5
+    if results.find("div", id="pagination") is not None:  # if there are more pages
+        for i in range(2, 6):  # up to 5
             req = requests.get(HOTPLAYER_URL.format(query=query, page=i))
-            results = BeautifulSoup(req.text, 'lxml').find("div", class_="result")
+            results = BeautifulSoup(req.text, "lxml").find("div", class_="result")
             to_process += list(results.find_all("div", id=ID_REGEX))
-    
+
     tracks = [Track.from_tag(s) for s in to_process]
     return tracks
-    
-
 
 
 def download(client, message):
@@ -60,7 +74,7 @@ def download(client, message):
     # download_link = download_links[0].get('href')
     # song_req = requests.get(download_link + "?play")
     # # removes hotplayer watermark from the filename
-    # new_filename = urllib.parse.unquote(song_req.headers['Content-Disposition'].partition('filename=')[2]).replace(' (www.hotplayer.ru)', '') 
+    # new_filename = urllib.parse.unquote(song_req.headers['Content-Disposition'].partition('filename=')[2]).replace(' (www.hotplayer.ru)', '')
     # print(new_filename)
     # audio = io.BytesIO(song_req.content)
     # await app.send_audio(
