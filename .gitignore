@@ -3,3 +3,4 @@ config.py
 *.session
 notes.txt
 .venv/
+.DS_STORE
