@@ -1,19 +1,24 @@
 from __future__ import annotations
+
+import asyncio
 from dataclasses import dataclass
 from typing import List, Tuple
 import requests
 from bs4 import BeautifulSoup, Tag
 import re
 import io
-import urllib
+from io import BufferedIOBase
 
-import telebot
+# for some reason, just importing urllib provides no typehints
+from urllib import parse as urllib_parse
+
+from telebot.async_telebot import AsyncTeleBot
 from telebot import types
 
 from config import BOT_TOKEN
 
-HOTPLAYER_URL = "https://hub.hitplayer.ru/?s={query}&p={page}"  # yes, hitplayer
-API_TOKEN = BOT_TOKEN
+bot = AsyncTeleBot(BOT_TOKEN, parse_mode="html")
+HOTPLAYER_URL = "https://box.hitplayer.ru/?s={query}&p={page}"  # yes, hitplayer
 ID_REGEX = re.compile(r"id-[0-9a-f]{21}")
 
 
@@ -31,20 +36,18 @@ class Track:
         title = tag.select_one(".title > .tt").get_text()
         raw_duration = tag.select_one(".dur").get_text().split(":")
         duration = int(raw_duration[0]) * 60 + int(raw_duration[1])
-        dl_link = tag.select_one(".com > .dwnld").get("href")
+        dl_link = tag.select_one(".com > .dwnld").get("href") + "?play"
         return Track(author, title, duration, dl_link)
 
     def download(self) -> Tuple[str, io.BytesIO]:
         """Returns the tuple with the new filename and the audio content"""
-        song_req = requests.get(self.dl_link + "?play")
+        song_req = requests.get(self.dl_link)
         audio = io.BytesIO(song_req.content)
         # removes hotplayer watermark from the filename
-        header_filename = song_req.headers["Content-Disposition"].partition(
-            "filename="
-        )[-1]
-        new_filename = urllib.parse.unquote(header_filename).replace(
-            " (www.hotplayer.ru)", ""
+        original_filename = urllib_parse.unquote(
+            song_req.headers["Content-Disposition"].partition("filename=")[-1]
         )
+        new_filename = original_filename.replace(" (www.hotplayer.ru)", "")
 
         return new_filename, audio
 
@@ -67,18 +70,61 @@ def get_tracks(query: str) -> List[Track]:
     return tracks
 
 
-def download(client, message):
-    print("processing..")
-    app = None
-    # await app.send_message(message.from_user.id, "procecececececececececessssssinG")
-    # download_link = download_links[0].get('href')
-    # song_req = requests.get(download_link + "?play")
-    # # removes hotplayer watermark from the filename
-    # new_filename = urllib.parse.unquote(song_req.headers['Content-Disposition'].partition('filename=')[2]).replace(' (www.hotplayer.ru)', '')
-    # print(new_filename)
-    # audio = io.BytesIO(song_req.content)
-    # await app.send_audio(
-    #         message.from_user.id,
-    #         audio,
-    #         file_name=new_filename
-    # )
+
+@bot.message_handler(commands=["start"])
+async def send_welcome(message):
+    await bot.reply_to(
+        message,
+        "Send me a search query and I'll reply with a track. I only work in private messages.",
+    )
+
+
+@bot.inline_handler(lambda _: True)
+async def display_results(inline_query: types.InlineQuery):
+    tracks = get_tracks(inline_query.query)
+    if not tracks:
+        not_found = [types.InlineQueryResultArticle(
+            '1',
+            'not_found',
+            types.InputTextMessageContent('nothing found')
+        )]
+        await bot.answer_inline_query(inline_query.id, not_found, cache_time=1)
+        return
+
+    results = [
+        types.InlineQueryResultAudio(
+            idx,
+            audio_url=track.dl_link,
+            title=track.title,
+            performer=track.author,
+            audio_duration=track.duration,
+        )
+        for idx, track in enumerate(tracks)
+    ]
+    await bot.answer_inline_query(inline_query.id, results[:10], cache_time=1)
+
+@bot.message_handler(
+    func=lambda message: True, content_types=["text"], chat_types=["private"]
+)
+async def download(message: types.Message):
+    await bot.send_message(message.chat.id, "processing...")
+    tracks = get_tracks(message.text)
+    if not tracks:
+        await bot.send_message(message.chat.id, "Track not found :(")
+        return
+    track = tracks[0]
+    await bot.send_message(
+        message.chat.id,
+        "Sending <pre>" + track.author + " - " + track.title + "</pre>...",
+    )
+    filename, audio = track.download()
+    await bot.send_audio(
+        message.from_user.id,
+        audio,
+        performer=track.author,
+        title=track.title,
+        duration=track.duration,
+    )
+
+
+asyncio.run(bot.polling())
